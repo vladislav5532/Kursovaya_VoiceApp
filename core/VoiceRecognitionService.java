@@ -10,12 +10,14 @@ public class VoiceRecognitionService {
     private Model model;
     private Recognizer recognizer;
     private boolean isRunning = false;
+    private TargetDataLine microphone;
     private RecognitionCallback callback;
 
     public interface RecognitionCallback {
         void onTextRecognized(String text);
         void onError(String error);
         void onStatus(String status);
+        void onPartialResult(String partial);
     }
 
     public VoiceRecognitionService(String modelPath) throws IOException {
@@ -28,6 +30,7 @@ public class VoiceRecognitionService {
         this.callback = callback;
     }
 
+    // ===== РАСПОЗНАВАНИЕ ИЗ ФАЙЛА =====
     public String recognizeAudioFile(File audioFile) throws IOException {
         AudioInputStream originalStream = null;
 
@@ -85,6 +88,89 @@ public class VoiceRecognitionService {
         }
     }
 
+    // ===== ЗАПИСЬ С МИКРОФОНА В РЕАЛЬНОМ ВРЕМЕНИ =====
+    public void startMicrophoneRecording() {
+        if (isRunning) {
+            if (callback != null) callback.onError("Запись уже запущена");
+            return;
+        }
+
+        isRunning = true;
+
+        new Thread(() -> {
+            try {
+                AudioFormat format = new AudioFormat(16000.0f, 16, 1, true, false);
+                DataLine.Info info = new DataLine.Info(TargetDataLine.class, format);
+
+                // Проверяем доступность микрофона
+                if (!AudioSystem.isLineSupported(info)) {
+                    if (callback != null) {
+                        callback.onError("Микрофон не поддерживает нужный формат. Используйте другой микрофон или файлы.");
+                    }
+                    isRunning = false;
+                    return;
+                }
+
+                microphone = (TargetDataLine) AudioSystem.getLine(info);
+                microphone.open(format);
+                microphone.start();
+
+                if (callback != null) {
+                    callback.onStatus("Запись началась. Говорите в микрофон...");
+                }
+
+                recognizer = new Recognizer(model, 16000.0f);
+                byte[] buffer = new byte[4096];
+
+                while (isRunning) {
+                    int bytesRead = microphone.read(buffer, 0, buffer.length);
+
+                    if (bytesRead > 0) {
+                        if (recognizer.acceptWaveForm(buffer, bytesRead)) {
+                            String result = recognizer.getResult();
+                            String text = extractText(result);
+                            if (!text.isEmpty() && callback != null) {
+                                callback.onTextRecognized(text);
+                            }
+                        } else {
+                            String partial = recognizer.getPartialResult();
+                            String partialText = extractText(partial);
+                            if (!partialText.isEmpty() && callback != null) {
+                                callback.onPartialResult(partialText);
+                            }
+                        }
+                    }
+                }
+
+                microphone.stop();
+                microphone.close();
+
+                String finalResult = recognizer.getFinalResult();
+                String finalText = extractText(finalResult);
+                if (!finalText.isEmpty() && callback != null) {
+                    callback.onTextRecognized("[Конец записи] " + finalText);
+                }
+
+            } catch (Exception e) {
+                if (callback != null) {
+                    callback.onError("Ошибка записи: " + e.getMessage());
+                }
+                e.printStackTrace();
+            } finally {
+                isRunning = false;
+            }
+        }).start();
+    }
+
+    public void stopMicrophoneRecording() {
+        isRunning = false;
+    }
+
+    public boolean isRecording() {
+        return isRunning;
+    }
+
+    // ===== ДЕМО-РЕЖИМ =====
     public String recognizeAudioFileDemo(File audioFile) {
         System.out.println("ДЕМО-РЕЖИМ: " + audioFile.getName());
 
@@ -107,6 +193,7 @@ public class VoiceRecognitionService {
         return result;
     }
 
+    // ===== ВСПОМОГАТЕЛЬНЫЕ МЕТОДЫ =====
     private String extractText(String jsonResult) {
         try {
             JsonElement element = JsonParser.parseString(jsonResult);
@@ -126,11 +213,8 @@ public class VoiceRecognitionService {
         if (text == null || text.isEmpty()) return text;
 
         try {
-            // Vosk возвращает UTF-8, но Windows показывает как Windows-1251
-            // "раз два три" -> "СБР°Р. РҐРІР° С,СБРё"
-
-            byte[] bytes = text.getBytes("Windows-1251"); // Получаем байты как Windows-1251
-            String fixed = new String(bytes, "UTF-8");    // Переинтерпретируем как UTF-8
+            byte[] bytes = text.getBytes("Windows-1251");
+            String fixed = new String(bytes, "UTF-8");
 
             if (!fixed.equals(text)) {
                 System.out.println("Исправлена кодировка: '" + text + "' -> '" + fixed + "'");
@@ -141,20 +225,5 @@ public class VoiceRecognitionService {
         } catch (Exception e) {
             return text;
         }
-    }
-
-    public void startRecognition() {
-        System.out.println("Запись с микрофона отключена");
-        if (callback != null) {
-            callback.onError("Запись с микрофона недоступна. Используйте аудиофайлы.");
-        }
-    }
-
-    public void stopRecognition() {
-        isRunning = false;
-    }
-
-    public boolean isRunning() {
-        return isRunning;
     }
 }

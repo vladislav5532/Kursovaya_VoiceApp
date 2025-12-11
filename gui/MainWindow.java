@@ -8,17 +8,18 @@ import java.io.IOException;
 
 public class MainWindow extends JFrame {
     private VoiceRecognitionService recognitionService;
+    private AudioRecorder audioRecorder;
     private FileManager fileManager;
 
     private JTextArea textArea;
+    private JButton recordButton;
+    private JButton stopRecordButton;
     private JButton recognizeFileButton;
     private JButton saveButton;
     private JLabel statusLabel;
 
     public MainWindow() {
-        // Устанавливаем UTF-8
         setUTF8Encoding();
-
         initComponents();
         setupLayout();
         setupListeners();
@@ -28,7 +29,6 @@ public class MainWindow extends JFrame {
     private void setUTF8Encoding() {
         try {
             System.setProperty("file.encoding", "UTF-8");
-            // Принудительно устанавливаем UTF-8 как дефолтную кодировку
             java.lang.reflect.Field charset =
                     java.nio.charset.Charset.class.getDeclaredField("defaultCharset");
             charset.setAccessible(true);
@@ -39,7 +39,7 @@ public class MainWindow extends JFrame {
     }
 
     private void initComponents() {
-        setTitle("Голосовой блокнот v1.0");
+        setTitle("Голосовой блокнот - Запись и распознавание");
         setDefaultCloseOperation(JFrame.EXIT_ON_CLOSE);
         setSize(800, 600);
 
@@ -48,29 +48,47 @@ public class MainWindow extends JFrame {
         textArea.setLineWrap(true);
         textArea.setWrapStyleWord(true);
 
-        recognizeFileButton = new JButton("📁 Загрузить и распознать аудиофайл");
+        recordButton = new JButton("🎤 Начать запись с микрофона");
+        stopRecordButton = new JButton("⏹ Остановить запись");
+        recognizeFileButton = new JButton("📁 Загрузить аудиофайл");
         saveButton = new JButton("💾 Сохранить текст");
-        statusLabel = new JLabel("Готов к работе. Используйте WAV-файлы 16000 Гц, моно");
+        statusLabel = new JLabel("Готов к работе");
 
+        stopRecordButton.setEnabled(false);
         saveButton.setEnabled(false);
     }
 
     private void setupLayout() {
         setLayout(new BorderLayout());
 
-        JPanel controlPanel = new JPanel(new FlowLayout());
-        controlPanel.add(recognizeFileButton);
-        controlPanel.add(saveButton);
+        // Панель записи
+        JPanel recordPanel = new JPanel(new FlowLayout());
+        recordPanel.add(recordButton);
+        recordPanel.add(stopRecordButton);
 
+        // Панель файлов
+        JPanel filePanel = new JPanel(new FlowLayout());
+        filePanel.add(recognizeFileButton);
+        filePanel.add(saveButton);
+
+        // Общая панель управления
+        JPanel controlPanel = new JPanel(new GridLayout(2, 1));
+        controlPanel.add(recordPanel);
+        controlPanel.add(filePanel);
+
+        // Статус бар
         JPanel statusPanel = new JPanel(new BorderLayout());
         statusPanel.add(statusLabel, BorderLayout.WEST);
 
+        // Основная область
         add(new JScrollPane(textArea), BorderLayout.CENTER);
         add(controlPanel, BorderLayout.NORTH);
         add(statusPanel, BorderLayout.SOUTH);
     }
 
     private void setupListeners() {
+        recordButton.addActionListener(e -> startRecording());
+        stopRecordButton.addActionListener(e -> stopRecording());
         recognizeFileButton.addActionListener(e -> recognizeFromFile());
         saveButton.addActionListener(e -> saveNote());
     }
@@ -79,7 +97,46 @@ public class MainWindow extends JFrame {
         try {
             fileManager = new FileManager(".");
             recognitionService = new VoiceRecognitionService("model");
-            statusLabel.setText("Система готова к работе (UTF-8)");
+            audioRecorder = new AudioRecorder();
+
+            // Настраиваем callback для распознавания в реальном времени
+            recognitionService.setCallback(new VoiceRecognitionService.RecognitionCallback() {
+                @Override
+                public void onTextRecognized(String text) {
+                    SwingUtilities.invokeLater(() -> {
+                        if (!text.trim().isEmpty()) {
+                            textArea.append(text + "\n");
+                            saveButton.setEnabled(true);
+                        }
+                    });
+                }
+
+                @Override
+                public void onPartialResult(String partial) {
+                    SwingUtilities.invokeLater(() -> {
+                        statusLabel.setText("Слышу: " + partial);
+                    });
+                }
+
+                @Override
+                public void onError(String error) {
+                    SwingUtilities.invokeLater(() -> {
+                        statusLabel.setText("Ошибка: " + error);
+                        JOptionPane.showMessageDialog(MainWindow.this, error,
+                                "Ошибка", JOptionPane.ERROR_MESSAGE);
+                    });
+                }
+
+                @Override
+                public void onStatus(String status) {
+                    SwingUtilities.invokeLater(() -> {
+                        statusLabel.setText(status);
+                    });
+                }
+            });
+
+            statusLabel.setText("Система готова к работе");
+
         } catch (Exception e) {
             JOptionPane.showMessageDialog(this,
                     "Ошибка инициализации: " + e.getMessage(),
@@ -87,6 +144,47 @@ public class MainWindow extends JFrame {
         }
     }
 
+    // ===== ЗАПИСЬ С МИКРОФОНА =====
+    private void startRecording() {
+        try {
+            // Запускаем запись в файл
+            audioRecorder.startRecording("recordings");
+
+            // Запускаем распознавание в реальном времени
+            recognitionService.startMicrophoneRecording();
+
+            recordButton.setEnabled(false);
+            stopRecordButton.setEnabled(true);
+            recognizeFileButton.setEnabled(false);
+            statusLabel.setText("Идёт запись с микрофона... Говорите!");
+
+        } catch (Exception e) {
+            e.printStackTrace();
+            JOptionPane.showMessageDialog(this,
+                    "Не удалось начать запись:\n" + e.getMessage() +
+                            "\n\nПроверьте подключение микрофона или используйте файлы.",
+                    "Ошибка", JOptionPane.ERROR_MESSAGE);
+        }
+    }
+
+    private void stopRecording() {
+        // Останавливаем распознавание
+        recognitionService.stopMicrophoneRecording();
+
+        // Останавливаем запись в файл
+        File recordedFile = audioRecorder.stopRecording();
+
+        if (recordedFile != null) {
+            statusLabel.setText("Запись сохранена: " + recordedFile.getName());
+        }
+
+        recordButton.setEnabled(true);
+        stopRecordButton.setEnabled(false);
+        recognizeFileButton.setEnabled(true);
+        saveButton.setEnabled(true);
+    }
+
+    // ===== РАСПОЗНАВАНИЕ ИЗ ФАЙЛА =====
     private void recognizeFromFile() {
         JFileChooser fileChooser = new JFileChooser();
         fileChooser.setFileFilter(new javax.swing.filechooser.FileFilter() {
@@ -111,12 +209,11 @@ public class MainWindow extends JFrame {
                 // РЕАЛЬНОЕ РАСПОЗНАВАНИЕ
                 String text = recognitionService.recognizeAudioFile(audioFile);
 
-                // Если текст пустой
                 if (text == null || text.trim().isEmpty()) {
                     throw new IOException("Пустой результат");
                 }
 
-                // ДОПОЛНИТЕЛЬНОЕ ИСПРАВЛЕНИЕ КОДИРОВКИ
+                // Исправляем кодировку
                 text = fixTextEncoding(text);
 
                 // Вывод в GUI
@@ -125,8 +222,8 @@ public class MainWindow extends JFrame {
                 statusLabel.setText("Файл распознан: " + audioFile.getName());
                 saveButton.setEnabled(true);
 
-                // Показ результата в отдельном окне с UTF-8
-                showResultDialog("Результат распознавания",
+                // Показ результата
+                showResultDialog("Результат распознавания файла",
                         "Файл: " + audioFile.getName() + "\n\n" +
                                 "Текст:\n" + text);
 
@@ -152,12 +249,10 @@ public class MainWindow extends JFrame {
     private String fixTextEncoding(String text) {
         if (text == null) return "";
 
-        // Если уже есть русские буквы - ок
         if (text.matches(".*[А-Яа-яЁё].*")) {
             return text;
         }
 
-        // Если похоже на испорченный UTF-8 ("СБР°Р. РҐРІР°")
         if (text.contains("Р") && text.contains("В") && text.contains("С")) {
             try {
                 byte[] bytes = text.getBytes("Windows-1251");
@@ -224,27 +319,18 @@ public class MainWindow extends JFrame {
     }
 
     public static void main(String[] args) {
-        // Устанавливаем UTF-8 для всей программы
         System.setProperty("file.encoding", "UTF-8");
         System.setProperty("sun.jnu.encoding", "UTF-8");
-
-        // Устанавливаем шрифт поддерживающий Unicode
-        setUIFont(new javax.swing.plaf.FontUIResource("Arial Unicode MS", Font.PLAIN, 12));
 
         SwingUtilities.invokeLater(() -> {
             MainWindow window = new MainWindow();
             window.setVisible(true);
-        });
-    }
 
-    private static void setUIFont(javax.swing.plaf.FontUIResource f) {
-        java.util.Enumeration<Object> keys = UIManager.getDefaults().keys();
-        while (keys.hasMoreElements()) {
-            Object key = keys.nextElement();
-            Object value = UIManager.get(key);
-            if (value instanceof javax.swing.plaf.FontUIResource) {
-                UIManager.put(key, f);
+            // Проверка наличия папки recordings
+            File recordingsDir = new File("recordings");
+            if (!recordingsDir.exists()) {
+                recordingsDir.mkdir();
             }
-        }
+        });
     }
 }
